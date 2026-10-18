@@ -1,11 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ACCOUNTS, linkedAccounts } from "../config.js";
-import { searchMessages } from "../gmail.js";
+import { MessageSummarySchema, searchMessages } from "../gmail.js";
 import {
   buildQuery,
   formatMessages,
-  MessageSchema,
   queryParam,
   sinceParam,
   toolErrorMessage,
@@ -19,7 +18,7 @@ const AccountResultSchema = z.object({
   ok: z.boolean(),
   error: z.string().optional(),
   resultSizeEstimate: z.number().optional(),
-  messages: z.array(MessageSchema),
+  messages: z.array(MessageSummarySchema),
 });
 
 export function registerSearchAllAccounts(server: McpServer): void {

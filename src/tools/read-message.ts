@@ -1,38 +1,24 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ACCOUNTS } from "../config.js";
-import { getMessage, getThread, type FullMessage } from "../gmail.js";
+import { FullMessageSchema, getMessage, getThread, type FullMessage } from "../gmail.js";
 import { truncate } from "../mime.js";
 import { toolErrorMessage } from "./shared.js";
 
 const accountParam = z.enum(ACCOUNTS).default("primary").describe("Which linked account the message belongs to.");
 
-const AttachmentSchema = z.object({
-  filename: z.string(),
-  mimeType: z.string(),
-  size: z.number(),
-  attachmentId: z.string(),
-});
-
-const FullMessageSchema = z.object({
-  id: z.string(),
-  threadId: z.string(),
-  labels: z.array(z.string()),
-  headers: z.record(z.string(), z.string()), // { From: "...", Subject: "...", … }
-  body: z.string(),
-  bodySource: z.enum(["text/plain", "text/html", "none"]),
-  truncated: z.boolean(),
-  attachments: z.array(AttachmentSchema),
-});
+// What the tools return: the full message plus whether the body was cut at maxChars.
+const ShapedMessageSchema = FullMessageSchema.extend({ truncated: z.boolean() });
+type ShapedMessage = z.infer<typeof ShapedMessageSchema>;
 
 // Apply the size cap and record whether it was hit.
-function shape(message: FullMessage, maxChars: number) {
+function shape(message: FullMessage, maxChars: number): ShapedMessage {
   const { text, truncated } = truncate(message.body, maxChars);
   return { ...message, body: text, truncated };
 }
 
 // The text version for Claude: headers, attachments, then the body inside clear markers.
-function render(m: ReturnType<typeof shape>): string {
+function render(m: ShapedMessage): string {
   const h = m.headers;
   const meta = [
     `Subject: ${h.Subject ?? "(no subject)"}`,
@@ -80,7 +66,7 @@ export function registerReadMessage(server: McpServer): void {
           .describe("Maximum body characters to return (500–50000)."),
       }),
       // .extend() reuses the schema and adds one field.
-      outputSchema: FullMessageSchema.extend({ account: z.string() }),
+      outputSchema: ShapedMessageSchema.extend({ account: z.string() }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ account, id, maxChars }) => {
@@ -119,7 +105,7 @@ export function registerReadMessage(server: McpServer): void {
           .default(3000)
           .describe("Maximum body characters per message (500–20000)."),
       }),
-      outputSchema: z.object({ account: z.string(), threadId: z.string(), messages: z.array(FullMessageSchema) }),
+      outputSchema: z.object({ account: z.string(), threadId: z.string(), messages: z.array(ShapedMessageSchema) }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ account, threadId, maxCharsPerMessage }) => {

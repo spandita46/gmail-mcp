@@ -1,11 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ACCOUNTS } from "../config.js";
-import { gmailFor, searchMessages } from "../gmail.js";
+import { gmailFor, MessageSummarySchema, searchMessages } from "../gmail.js";
 import {
   buildQuery,
   formatMessages,
-  MessageSchema,
   queryParam,
   sinceParam,
   toolErrorMessage,
@@ -51,7 +50,7 @@ export function registerSearchMail(server: McpServer): void {
         query: z.string(),
         resultSizeEstimate: z.number(),
         nextPageToken: z.string().optional(),
-        messages: z.array(MessageSchema),
+        messages: z.array(MessageSummarySchema),
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

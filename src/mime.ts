@@ -1,21 +1,26 @@
 // "import type": only the Gmail type definitions are needed, not the library itself.
 import type { gmail_v1 } from "@googleapis/gmail";
+import { z } from "zod";
 
 type Part = gmail_v1.Schema$MessagePart; // one node in the MIME tree
 
-export interface Attachment {
-  filename: string;
-  mimeType: string;
-  size: number; // bytes
-  attachmentId: string; // needed later if we ever download attachments
-}
+// Each schema is the source of truth: tools use it as their outputSchema, and the
+// TypeScript type is derived from it, so the two can't drift apart.
+export const AttachmentSchema = z.object({
+  filename: z.string(),
+  mimeType: z.string(),
+  size: z.number(), // bytes
+  attachmentId: z.string(), // needed later if we ever download attachments
+});
+export type Attachment = z.infer<typeof AttachmentSchema>;
 
-export interface ExtractedMessage {
-  headers: Record<string, string>;
-  body: string;
-  bodySource: "text/plain" | "text/html" | "none"; // where the text came from, useful for debugging
-  attachments: Attachment[];
-}
+export const ExtractedMessageSchema = z.object({
+  headers: z.record(z.string(), z.string()), // { From: "...", Subject: "...", … }
+  body: z.string(),
+  bodySource: z.enum(["text/plain", "text/html", "none"]), // where the text came from, useful for debugging
+  attachments: z.array(AttachmentSchema),
+});
+export type ExtractedMessage = z.infer<typeof ExtractedMessageSchema>;
 
 // Only the headers worth showing. A real email has dozens (Received, DKIM, X-…).
 const WANTED_HEADERS = ["From", "To", "Cc", "Date", "Subject", "Reply-To", "Message-ID"];

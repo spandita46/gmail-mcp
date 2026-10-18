@@ -1,20 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ACCOUNTS, linkedAccounts } from "../config.js";
-import { aggregateSenders, type ScannedMessage } from "../cleanup.js";
+import { aggregateSenders, SenderStatsSchema, type ScannedMessage } from "../cleanup.js";
 import { listMessageIds, scanSenders } from "../gmail.js";
 import { toolErrorMessage } from "./shared.js";
 
-const SenderSchema = z.object({
-  address: z.string(),
-  name: z.string(),
-  total: z.number(),
-  byAccount: z.record(z.string(), z.number()),
-  latest: z.string(),
-  unsubscribe: z.object({ url: z.string().optional(), mailto: z.string().optional(), oneClick: z.boolean() }).optional(),
-  gmailQuery: z.string(),
-});
-
+// One entry per account. Only this tool builds it, so the schema lives here.
 const ScanSchema = z.object({
   account: z.string(),
   email: z.string(),
@@ -25,6 +16,7 @@ const ScanSchema = z.object({
   complete: z.boolean(), // false when maxScanPerAccount cut the list short
   estimate: z.number(),
 });
+type AccountScan = z.infer<typeof ScanSchema>;
 
 export function registerCleanupReport(server: McpServer): void {
   server.registerTool(
@@ -56,7 +48,7 @@ export function registerCleanupReport(server: McpServer): void {
       outputSchema: z.object({
         query: z.string(),
         accounts: z.array(ScanSchema),
-        senders: z.array(SenderSchema),
+        senders: z.array(SenderStatsSchema),
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -72,7 +64,7 @@ export function registerCleanupReport(server: McpServer): void {
         return { content: [{ type: "text", text: "No linked accounts match. Run: npm run auth -- <alias>" }], isError: true };
       }
 
-      // Accounts in parallel. Within each account, scanSenders limits itself to 10 requests at a time.
+      // Accounts in parallel. Within each account, scanSenders limits how many requests run at once.
       const settled = await Promise.allSettled(
         targets.map(async (t) => {
           const { ids, estimate, complete } = await listMessageIds(t.account, query, maxScanPerAccount);
@@ -82,7 +74,7 @@ export function registerCleanupReport(server: McpServer): void {
       );
 
       const scanned: ScannedMessage[] = [];
-      const accountSummaries = settled.map((outcome, i) => {
+      const accountSummaries = settled.map((outcome, i): AccountScan => {
         const { account, email } = targets[i]!;
         if (outcome.status === "fulfilled") {
           const { messages, skipped, complete, estimate } = outcome.value;

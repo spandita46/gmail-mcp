@@ -1,11 +1,11 @@
 import { z } from "zod";
-import type { Account } from "../config.js";
+import { TIME_ZONE, type Account } from "../config.js";
 import {
   describeGoogleError,
   resetClient,
   type MessageSummary,
 } from "../gmail.js";
-import { localMidnightEpoch, TIME_ZONE } from "../time.js";
+import { localMidnightEpoch } from "../time.js";
 
 export const LocalDate = z
   .string()
@@ -27,18 +27,6 @@ export const queryParam = z
     'Gmail search query, same syntax as the Gmail search box. Examples: "from:amazon newer_than:7d", ' +
       '"is:unread label:inbox", "subject:invoice", "has:attachment filename:pdf". May be empty when since/until are given.',
   );
-
-export const MessageSchema = z.object({
-  id: z.string(),
-  threadId: z.string(),
-  date: z.string(),
-  from: z.string(),
-  to: z.string(),
-  subject: z.string(),
-  snippet: z.string(),
-  unread: z.boolean(),
-  labels: z.array(z.string()),
-});
 
 // Claude's query plus exact epoch boundaries (moved here from search-mail.ts).
 export function buildQuery(

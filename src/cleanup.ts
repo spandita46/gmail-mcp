@@ -1,4 +1,12 @@
 // Pure helpers for the cleanup report: no network, no MCP. Easy to test.
+import { z } from "zod";
+
+// Length caps for sender-controlled header text shown in the report.
+const MAX_HEADER = 200; // default for any header value
+const MAX_NAME = 80; // From display name
+const MAX_ADDRESS = 254; // longest valid email address (RFC 5321)
+const MAX_DATE = 80; // Date header
+const MAX_LINK = 1000; // unsubscribe links; longer ones are dropped, since a cut-off link is broken
 
 // Run async work over many items, but at most `limit` at a time.
 // Gmail rate-limits per user, so firing 300 requests at once would hit 429 errors.
@@ -26,7 +34,7 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
 // Header values are written by the sender, so treat them as untrusted text: remove control
 // characters (newlines included, so a header can't inject lines into the report), collapse
 // whitespace, and cap the length.
-export function cleanHeader(value: string, max = 200): string {
+export function cleanHeader(value: string, max = MAX_HEADER): string {
   const flat = value.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
@@ -35,10 +43,10 @@ export function cleanHeader(value: string, max = 200): string {
 export function parseSender(from: string): { name: string; address: string } {
   const match = from.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
   if (match) {
-    const address = cleanHeader(match[2]!, 254).toLowerCase();
-    return { name: cleanHeader(match[1]!, 80) || address, address };
+    const address = cleanHeader(match[2]!, MAX_ADDRESS).toLowerCase();
+    return { name: cleanHeader(match[1]!, MAX_NAME) || address, address };
   }
-  const address = cleanHeader(from, 254).toLowerCase();
+  const address = cleanHeader(from, MAX_ADDRESS).toLowerCase();
   return { name: address, address };
 }
 
@@ -49,14 +57,14 @@ export function parseDate(header: string): number | undefined {
   return Number.isNaN(ms) ? undefined : ms;
 }
 
-export interface Unsubscribe {
-  url?: string;      // https link, opened in a browser
-  mailto?: string;   // send-an-email style unsubscribe
-  oneClick: boolean; // RFC 8058: the sender supports one-click unsubscribe
-}
-
-// Links longer than this are dropped rather than truncated, since a cut-off link is broken.
-const MAX_LINK = 1000;
+// Schemas are the source of truth: the cleanup_report tool uses them as its outputSchema,
+// and the TypeScript types are derived from them.
+export const UnsubscribeSchema = z.object({
+  url: z.string().optional(),    // https link, opened in a browser
+  mailto: z.string().optional(), // send-an-email style unsubscribe
+  oneClick: z.boolean(),         // RFC 8058: the sender supports one-click unsubscribe
+});
+export type Unsubscribe = z.infer<typeof UnsubscribeSchema>;
 
 // Accept a link only if it parses, uses the expected scheme, and has no whitespace or control
 // characters. Returns the normalised form so what we show is what a browser would open.
@@ -108,15 +116,16 @@ export interface ScannedMessage {
   listUnsubscribePost: string;
 }
 
-export interface SenderStats {
-  address: string;
-  name: string;
-  total: number;
-  byAccount: Record<string, number>;
-  latest: string; // Date header of the newest message seen
-  unsubscribe?: Unsubscribe;
-  gmailQuery: string; // paste into Gmail search to see or bulk-select them
-}
+export const SenderStatsSchema = z.object({
+  address: z.string(),
+  name: z.string(),
+  total: z.number(),
+  byAccount: z.record(z.string(), z.number()),
+  latest: z.string(), // Date header of the newest message seen
+  unsubscribe: UnsubscribeSchema.optional(),
+  gmailQuery: z.string(), // paste into Gmail search to see or bulk-select them
+});
+export type SenderStats = z.infer<typeof SenderStatsSchema>;
 
 // Group scanned messages by sender address and rank by volume.
 export function aggregateSenders(messages: ScannedMessage[], top: number): SenderStats[] {
@@ -124,7 +133,7 @@ export function aggregateSenders(messages: ScannedMessage[], top: number): Sende
   for (const m of messages) {
     const { name, address } = parseSender(m.from);
     if (!address) continue;
-    const date = cleanHeader(m.date, 80);
+    const date = cleanHeader(m.date, MAX_DATE);
     const ms = m.internalDate ?? parseDate(m.date);
     // Messages arrive newest first, so a sender whose dates are all unreadable keeps the first one seen.
     const stats =

@@ -15,6 +15,11 @@ export function isAccount(value: string): value is Account {
   return (ACCOUNTS as readonly string[]).includes(value);
 }
 
+// All user-configurable settings live in this file. Env vars are set in claude_desktop_config.json.
+
+// Time zone for since/until day boundaries and server_time.
+export const TIME_ZONE = process.env.GMAIL_MCP_TZ ?? "America/Toronto";
+
 // Read-only by design: no send, draft or modify permissions are ever requested.
 export const SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
 

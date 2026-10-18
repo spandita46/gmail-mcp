@@ -1,7 +1,14 @@
 import { gmail, type gmail_v1 } from "@googleapis/gmail";
+import { z } from "zod";
 import { type Account, createOAuthClient, loadToken } from "./config.js";
-import { cleanText, extractMessage, type ExtractedMessage } from "./mime.js";
+import { cleanText, extractMessage, ExtractedMessageSchema } from "./mime.js";
 import { mapLimit, type ScannedMessage } from "./cleanup.js";
+
+const LIST_PAGE_SIZE = 500; // the most ids Gmail returns per messages.list page
+const SCAN_CONCURRENCY = 10; // parallel requests per account; higher risks 429s
+const RETRY_ATTEMPTS = 4; // total tries for a request that fails with 429/5xx
+const RETRY_BASE_MS = 500; // first backoff delay, doubled on each retry
+const RETRY_JITTER_MS = 250; // random extra delay, so parallel retries don't line up
 
 // One client per account, created on first use and kept for the life of the process.
 // Each OAuth2Client caches its own 1-hour access token, so reusing it avoids a token
@@ -45,17 +52,19 @@ function getHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, nam
   return headers?.find((h) => h.name?.toLowerCase() === wanted)?.value ?? "";
 }
 
-export interface MessageSummary {
-  id: string;
-  threadId: string;
-  date: string;
-  from: string;
-  to: string;
-  subject: string;
-  snippet: string;
-  unread: boolean;
-  labels: string[];
-}
+// The schema is the source of truth; search tools use it in their outputSchema.
+export const MessageSummarySchema = z.object({
+  id: z.string(),
+  threadId: z.string(),
+  date: z.string(),
+  from: z.string(),
+  to: z.string(),
+  subject: z.string(),
+  snippet: z.string(),
+  unread: z.boolean(),
+  labels: z.array(z.string()),
+});
+export type MessageSummary = z.infer<typeof MessageSummarySchema>;
 
 export interface SearchResult {
   messages: MessageSummary[];
@@ -151,11 +160,12 @@ export function describeGoogleError(err: unknown, account: Account): string {
   return `Gmail request failed for "${account}": ${e.message ?? String(err)}`;
 }
 
-export interface FullMessage extends ExtractedMessage {
-  id: string;
-  threadId: string;
-  labels: string[];
-}
+export const FullMessageSchema = ExtractedMessageSchema.extend({
+  id: z.string(),
+  threadId: z.string(),
+  labels: z.array(z.string()),
+});
+export type FullMessage = z.infer<typeof FullMessageSchema>;
 
 // format "full" returns the entire MIME tree, with bodies inline (base64url).
 export async function getMessage(account: Account, id: string): Promise<FullMessage> {
@@ -177,7 +187,7 @@ export async function getThread(account: Account, threadId: string): Promise<Ful
 }
 
 // Collect up to `max` message ids for a query, following nextPageToken
-// (Gmail returns at most 500 ids per page). Pages must be fetched one after another,
+// (Gmail returns at most LIST_PAGE_SIZE ids per page). Pages must be fetched one after another,
 // because each request needs the previous page's token.
 // `complete` is true when every match was collected. `estimate` is Gmail's rough total and
 // only matters when the list was cut off at `max`.
@@ -194,7 +204,7 @@ export async function listMessageIds(
     const { data } = await api.users.messages.list({
       userId: "me",
       q: query,
-      maxResults: Math.min(500, max - ids.length),
+      maxResults: Math.min(LIST_PAGE_SIZE, max - ids.length),
       pageToken,
     });
     estimate = data.resultSizeEstimate ?? estimate;
@@ -220,18 +230,18 @@ function isTransient(status: number | undefined): boolean {
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Retry temporary failures with exponential backoff and jitter: about 0.5s, 1s, 2s.
-async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      if (attempt >= attempts || !isTransient(httpStatus(err))) throw err;
-      await wait(500 * 2 ** (attempt - 1) + Math.random() * 250);
+      if (attempt >= RETRY_ATTEMPTS || !isTransient(httpStatus(err))) throw err;
+      await wait(RETRY_BASE_MS * 2 ** (attempt - 1) + Math.random() * RETRY_JITTER_MS);
     }
   }
 }
 
-// Fetch just the headers the cleanup report needs, 10 requests at a time.
+// Fetch just the headers the cleanup report needs, SCAN_CONCURRENCY requests at a time.
 // One bad message shouldn't sink the whole scan: a message deleted since the list call (404),
 // or one that keeps failing with 429/5xx after retries, is counted in `skipped`.
 // Other errors (expired sign-in, 403) affect every request, so they still fail the scan.
@@ -240,7 +250,7 @@ export async function scanSenders(
   ids: string[],
 ): Promise<{ messages: ScannedMessage[]; skipped: number }> {
   const { api } = gmailFor(account);
-  const results = await mapLimit(ids, 10, async (id): Promise<ScannedMessage | undefined> => {
+  const results = await mapLimit(ids, SCAN_CONCURRENCY, async (id): Promise<ScannedMessage | undefined> => {
     try {
       const { data } = await withRetry(() =>
         api.users.messages.get({

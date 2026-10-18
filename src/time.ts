@@ -1,5 +1,4 @@
-// The one place the time zone is defined. Set it with GMAIL_MCP_TZ in claude_desktop_config.json.
-export const TIME_ZONE = process.env.GMAIL_MCP_TZ ?? "America/Toronto";
+import { TIME_ZONE } from "./config.js"; // set with GMAIL_MCP_TZ
 
 // How far `timeZone`'s wall clock is ahead of UTC at a given instant, in ms.
 // Toronto in October (EDT) → -4h. In January (EST) → -5h.
