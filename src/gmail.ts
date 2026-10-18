@@ -1,6 +1,6 @@
 import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import { z } from "zod";
-import { mapLimit, withRetry, type RetryOptions } from "./async.js";
+import { createRateLimiter, mapLimit, withRetry, type RateLimiter, type RetryOptions } from "./async.js";
 import type { ScannedMessage } from "./cleanup.js";
 import { type Account, createOAuthClient } from "./config.js";
 import { httpStatus, isRateLimited, isTransient, retryAfterMs } from "./google-errors.js";
@@ -8,9 +8,13 @@ import { cleanText, extractMessage, ExtractedMessageSchema } from "./mime.js";
 import { loadToken } from "./tokens.js";
 
 const LIST_PAGE_SIZE = 500; // the most ids Gmail returns per messages.list page
-// Parallel requests per account. Gmail allows ~250 quota units/s per user and messages.get costs 5,
-// so ~50 requests/s at most. 10 in parallel overshot that in testing (a 1000-message scan got throttled).
-const SCAN_CONCURRENCY = 4;
+// Gmail allows ~250 quota units/s per user; messages.get costs 5, so ~50 requests/s at most.
+// Live stress tests: 10 parallel requests got throttled, and so did 4, because a concurrency cap
+// doesn't limit requests per SECOND. So scans also go through a rate limiter, set to half the budget
+// to leave room for other tools using the same account.
+const SCAN_CONCURRENCY = 4; // requests in flight at once, per account
+const SCAN_RATE_PER_SECOND = 25; // request starts per second, per account (1000 messages ≈ 40 s)
+const RATE_LIMIT_PAUSE_MS = 5_000; // shared pause when Gmail throttles without saying how long
 
 export interface GmailClient {
   api: gmail_v1.Gmail;
@@ -209,19 +213,29 @@ export async function scanSendersWith(
   account: Account,
   ids: string[],
   retry: RetryOptions = {},
+  limiter: RateLimiter = createRateLimiter(SCAN_RATE_PER_SECOND),
 ): Promise<{ messages: ScannedMessage[]; skipped: number }> {
   const results = await mapLimit(ids, SCAN_CONCURRENCY, async (id): Promise<ScannedMessage | undefined> => {
     try {
       const { data } = await withRetry(
-        () =>
-          api.users.messages.get({
+        async () => {
+          await limiter.acquire(); // every attempt, including retries, waits for a slot
+          return api.users.messages.get({
             userId: "me",
             id,
             format: "metadata",
             metadataHeaders: ["From", "Date", "List-Unsubscribe", "List-Unsubscribe-Post"],
-          }),
+          });
+        },
         isTransient,
-        { delayMs: (err) => retryAfterMs(err), ...retry },
+        {
+          delayMs: (err) => {
+            // On a rate limit, pause ALL workers (via the shared limiter), not just this one.
+            if (isRateLimited(err)) limiter.pauseFor(retryAfterMs(err) ?? RATE_LIMIT_PAUSE_MS);
+            return retryAfterMs(err);
+          },
+          ...retry,
+        },
       );
       const header = (name: string) => getHeader(data.payload?.headers, name);
       const internalDate = Number(data.internalDate);

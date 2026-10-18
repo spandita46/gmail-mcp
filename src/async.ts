@@ -58,3 +58,31 @@ export async function withRetry<T>(
     }
   }
 }
+
+// Spaces out request STARTS to at most `perSecond`, shared by every worker that uses it.
+// mapLimit caps how many requests run at once, but fast responses still mean many per second;
+// Gmail budgets per second, so we need both. pauseFor() makes every worker wait, e.g. when
+// Gmail says "Retry after …", so parallel retries can't keep re-triggering the throttle.
+export interface RateLimiter {
+  acquire(): Promise<void>;
+  pauseFor(ms: number): void;
+}
+
+export function createRateLimiter(
+  perSecond: number,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> } = { now: Date.now, sleep: wait },
+): RateLimiter {
+  const interval = 1000 / perSecond;
+  let nextSlot = 0; // the earliest time the next request may start
+  return {
+    async acquire() {
+      const now = clock.now();
+      const slot = Math.max(now, nextSlot);
+      nextSlot = slot + interval; // reserve this slot before waiting, so concurrent callers queue up
+      if (slot > now) await clock.sleep(slot - now);
+    },
+    pauseFor(ms) {
+      nextSlot = Math.max(nextSlot, clock.now() + ms);
+    },
+  };
+}

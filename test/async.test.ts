@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { backoffMs, mapLimit, withRetry } from "../src/async.js";
+import { backoffMs, createRateLimiter, mapLimit, withRetry } from "../src/async.js";
 
 const tick = (ms = 1) => new Promise((r) => setTimeout(r, ms));
 const noSleep = async () => {};
@@ -94,5 +94,41 @@ describe("backoffMs", () => {
       const ms = backoffMs(attempt);
       assert.ok(ms >= base && ms < base + 250, `attempt ${attempt}: ${ms}`);
     }
+  });
+});
+
+describe("createRateLimiter", () => {
+  // A fake clock: sleep() advances time instantly, so the test runs in milliseconds.
+  const fakeClock = () => {
+    let t = 1_000_000;
+    return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+  };
+
+  it("spaces request starts to the configured rate", async () => {
+    const clock = fakeClock();
+    const limiter = createRateLimiter(10, clock); // one start every 100ms
+    const starts: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      await limiter.acquire();
+      starts.push(clock.now());
+    }
+    assert.deepEqual(starts.map((s) => s - starts[0]!), [0, 100, 200, 300, 400]);
+  });
+
+  it("queues concurrent callers instead of letting them start together", async () => {
+    const waits: number[] = []; // how long each caller was told to wait
+    const limiter = createRateLimiter(20, { now: () => 1_000_000, sleep: async (ms) => { waits.push(ms); } }); // every 50ms
+    await Promise.all([...Array(4)].map(() => limiter.acquire()));
+    assert.deepEqual(waits, [50, 100, 150]); // the first caller starts immediately (no wait)
+  });
+
+  it("pauseFor holds back every later request (regression: retries kept re-triggering the throttle)", async () => {
+    const clock = fakeClock();
+    const limiter = createRateLimiter(100, clock);
+    await limiter.acquire();
+    const pausedAt = clock.now();
+    limiter.pauseFor(5_000);
+    await limiter.acquire();
+    assert.ok(clock.now() - pausedAt >= 5_000);
   });
 });

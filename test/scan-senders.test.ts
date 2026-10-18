@@ -4,6 +4,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { gmail_v1 } from "@googleapis/gmail";
 import { scanSendersWith } from "../src/gmail.js";
+import type { RateLimiter } from "../src/async.js";
+
+// A limiter that never waits but records what the scan asked of it.
+function spyLimiter() {
+  const pauses: number[] = [];
+  let acquires = 0;
+  const limiter: RateLimiter = { acquire: async () => { acquires++; }, pauseFor: (ms) => { pauses.push(ms); } };
+  return { limiter, pauses, acquires: () => acquires };
+}
 
 type Behaviour = (id: string, attempt: number) => unknown; // return data, or throw
 
@@ -46,7 +55,7 @@ const fast = { sleep: async () => {} }; // don't actually wait between retries
 describe("scanSendersWith", () => {
   it("reads the headers it needs (case-insensitively) and internalDate", async () => {
     const { api } = fakeApi((id) => headersFor(id));
-    const { messages, skipped } = await scanSendersWith(api, "primary", ["a"], fast);
+    const { messages, skipped } = await scanSendersWith(api, "primary", ["a"], fast, spyLimiter().limiter);
     assert.equal(skipped, 0);
     assert.deepEqual(messages[0], {
       account: "primary",
@@ -63,7 +72,7 @@ describe("scanSendersWith", () => {
       if (id === "gone") throw apiError(404);
       return headersFor(id);
     });
-    const { messages, skipped } = await scanSendersWith(api, "primary", ["a", "gone", "b"], fast);
+    const { messages, skipped } = await scanSendersWith(api, "primary", ["a", "gone", "b"], fast, spyLimiter().limiter);
     assert.equal(skipped, 1);
     assert.deepEqual(messages.map((m) => m.from.split(" ")[1]), ["a", "b"]);
   });
@@ -73,7 +82,7 @@ describe("scanSendersWith", () => {
       if (attempt === 1) throw apiError(500);
       return headersFor(id);
     });
-    const { messages } = await scanSendersWith(api, "primary", ["a"], fast);
+    const { messages } = await scanSendersWith(api, "primary", ["a"], fast, spyLimiter().limiter);
     assert.equal(messages.length, 1);
     assert.equal(calls.length, 2);
   });
@@ -83,7 +92,7 @@ describe("scanSendersWith", () => {
       if (id === "flaky") throw apiError(503);
       return headersFor(id);
     });
-    const { messages, skipped } = await scanSendersWith(api, "primary", ["a", "flaky"], { ...fast, attempts: 2 });
+    const { messages, skipped } = await scanSendersWith(api, "primary", ["a", "flaky"], { ...fast, attempts: 2 }, spyLimiter().limiter);
     assert.equal(skipped, 1);
     assert.equal(messages.length, 1);
   });
@@ -93,7 +102,7 @@ describe("scanSendersWith", () => {
       if (attempt < 3) throw apiError(403, "userRateLimitExceeded", "User-rate limit exceeded.");
       return headersFor(id);
     });
-    const { messages, skipped } = await scanSendersWith(api, "primary", ["a"], fast);
+    const { messages, skipped } = await scanSendersWith(api, "primary", ["a"], fast, spyLimiter().limiter);
     assert.equal(skipped, 0);
     assert.equal(messages.length, 1);
   });
@@ -105,7 +114,7 @@ describe("scanSendersWith", () => {
       if (attempt === 1) throw apiError(403, "userRateLimitExceeded", `User-rate limit exceeded.  Retry after ${retryAt}`);
       return headersFor(id);
     });
-    await scanSendersWith(api, "primary", ["a"], { sleep: async (ms) => { waits.push(ms); } });
+    await scanSendersWith(api, "primary", ["a"], { sleep: async (ms) => { waits.push(ms); } }, spyLimiter().limiter);
     assert.equal(waits.length, 1);
     assert.ok(waits[0]! > 3_000 && waits[0]! <= 5_000, `waited ${waits[0]}ms`);
   });
@@ -114,14 +123,14 @@ describe("scanSendersWith", () => {
     const { api } = fakeApi(() => {
       throw apiError(403, "userRateLimitExceeded", "User-rate limit exceeded.");
     });
-    await assert.rejects(scanSendersWith(api, "primary", ["a", "b", "c"], { ...fast, attempts: 2 }), /rate limit/i);
+    await assert.rejects(scanSendersWith(api, "primary", ["a", "b", "c"], { ...fast, attempts: 2 }, spyLimiter().limiter), /rate limit/i);
   });
 
   it("fails immediately on a real permission 403, without retrying", async () => {
     const { api, calls } = fakeApi(() => {
       throw apiError(403, "insufficientPermissions", "Insufficient Permission");
     });
-    await assert.rejects(scanSendersWith(api, "primary", ["a"], fast), /Insufficient Permission/);
+    await assert.rejects(scanSendersWith(api, "primary", ["a"], fast, spyLimiter().limiter), /Insufficient Permission/);
     assert.equal(calls.length, 1);
   });
 
@@ -129,6 +138,48 @@ describe("scanSendersWith", () => {
     const { api } = fakeApi(() => {
       throw Object.assign(new Error("invalid_grant"), { response: { status: 400, data: { error: "invalid_grant" } } });
     });
-    await assert.rejects(scanSendersWith(api, "primary", ["a"], fast), /invalid_grant/);
+    await assert.rejects(scanSendersWith(api, "primary", ["a"], fast, spyLimiter().limiter), /invalid_grant/);
+  });
+
+  it("waits for the rate limiter before every attempt, retries included", async () => {
+    const spy = spyLimiter();
+    const { api } = fakeApi((id, attempt) => {
+      if (attempt === 1) throw apiError(500);
+      return headersFor(id);
+    });
+    await scanSendersWith(api, "primary", ["a", "b"], fast, spy.limiter);
+    assert.equal(spy.acquires(), 4); // 2 messages × (1 failure + 1 success)
+  });
+
+  it("pauses the shared limiter when Gmail rate-limits, using its Retry-after hint", async () => {
+    const spy = spyLimiter();
+    const retryAt = new Date(Date.now() + 7_000).toISOString();
+    const { api } = fakeApi((id, attempt) => {
+      if (attempt === 1) throw apiError(403, "userRateLimitExceeded", `User-rate limit exceeded.  Retry after ${retryAt}`);
+      return headersFor(id);
+    });
+    await scanSendersWith(api, "primary", ["a"], fast, spy.limiter);
+    assert.equal(spy.pauses.length, 1);
+    assert.ok(spy.pauses[0]! > 5_000 && spy.pauses[0]! <= 7_000, `paused ${spy.pauses[0]}ms`);
+  });
+
+  it("pauses for a default 5s when a rate limit gives no hint", async () => {
+    const spy = spyLimiter();
+    const { api } = fakeApi((id, attempt) => {
+      if (attempt === 1) throw apiError(429);
+      return headersFor(id);
+    });
+    await scanSendersWith(api, "primary", ["a"], fast, spy.limiter);
+    assert.deepEqual(spy.pauses, [5_000]);
+  });
+
+  it("does not pause for an ordinary 5xx", async () => {
+    const spy = spyLimiter();
+    const { api } = fakeApi((id, attempt) => {
+      if (attempt === 1) throw apiError(503);
+      return headersFor(id);
+    });
+    await scanSendersWith(api, "primary", ["a"], fast, spy.limiter);
+    assert.deepEqual(spy.pauses, []);
   });
 });
