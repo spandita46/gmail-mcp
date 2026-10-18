@@ -16,6 +16,12 @@ const StoredTokenSchema = z.object({
 });
 export type StoredToken = z.infer<typeof StoredTokenSchema>;
 
+export interface LinkedAccount {
+  account: Account;
+  email: string;
+  savedAt: string;
+}
+
 export function saveToken(account: Account, token: StoredToken): void {
   new Entry(KEYCHAIN_SERVICE, account).setPassword(JSON.stringify(token));
 }
@@ -31,12 +37,6 @@ export function loadToken(account: Account): StoredToken | null {
     );
   }
   return parsed.data;
-}
-
-export interface LinkedAccount {
-  account: Account;
-  email: string;
-  savedAt: string;
 }
 
 // Every alias that has a usable Keychain item. A malformed item counts as

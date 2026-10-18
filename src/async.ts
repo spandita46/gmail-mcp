@@ -1,5 +1,9 @@
 // Generic async helpers: no Gmail, no MCP.
 
+const RETRY_ATTEMPTS = 4; // total tries, including the first
+const RETRY_BASE_MS = 500; // first backoff delay, doubled on each retry
+const RETRY_JITTER_MS = 250; // random extra delay, so parallel retries don't line up
+
 // Run async work over many items, but at most `limit` at a time.
 // Gmail rate-limits per user, so firing 300 requests at once would hit 429 errors.
 // If any call throws, the other workers stop taking new items and the error is rethrown.
@@ -22,10 +26,6 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
   await Promise.all(workers);
   return results;
 }
-
-const RETRY_ATTEMPTS = 4; // total tries, including the first
-const RETRY_BASE_MS = 500; // first backoff delay, doubled on each retry
-const RETRY_JITTER_MS = 250; // random extra delay, so parallel retries don't line up
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

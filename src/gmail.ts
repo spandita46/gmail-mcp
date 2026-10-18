@@ -10,15 +10,44 @@ import { loadToken } from "./tokens.js";
 const LIST_PAGE_SIZE = 500; // the most ids Gmail returns per messages.list page
 const SCAN_CONCURRENCY = 10; // parallel requests per account; higher risks 429s
 
+export interface GmailClient {
+  api: gmail_v1.Gmail;
+  email: string; // the mailbox this client signs in to
+}
+
+// The schemas are the source of truth; the tools use them in their outputSchema.
+export const MessageSummarySchema = z.object({
+  id: z.string(),
+  threadId: z.string(),
+  date: z.string(),
+  from: z.string(),
+  to: z.string(),
+  subject: z.string(),
+  snippet: z.string(),
+  unread: z.boolean(),
+  labels: z.array(z.string()),
+});
+export type MessageSummary = z.infer<typeof MessageSummarySchema>;
+
+export const FullMessageSchema = ExtractedMessageSchema.extend({
+  id: z.string(),
+  threadId: z.string(),
+  labels: z.array(z.string()),
+});
+export type FullMessage = z.infer<typeof FullMessageSchema>;
+
+export interface SearchResult {
+  messages: MessageSummary[];
+  resultSizeEstimate: number; // Gmail's *estimate* of total matches, not exact
+  nextPageToken?: string; // present when there are more results
+}
+
 // One client per account, created on first use and kept for the life of the process.
 // Each OAuth2Client caches its own 1-hour access token, so reusing it avoids a token
 // refresh on every tool call.
-const clients = new Map<Account, { api: gmail_v1.Gmail; email: string }>();
+const clients = new Map<Account, GmailClient>();
 
-export function gmailFor(account: Account): {
-  api: gmail_v1.Gmail;
-  email: string;
-} {
+export function gmailFor(account: Account): GmailClient {
   const cached = clients.get(account);
   if (cached) return cached;
 
@@ -50,26 +79,6 @@ export function resetClient(account: Account): void {
 function getHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, name: string): string {
   const wanted = name.toLowerCase();
   return headers?.find((h) => h.name?.toLowerCase() === wanted)?.value ?? "";
-}
-
-// The schema is the source of truth; search tools use it in their outputSchema.
-export const MessageSummarySchema = z.object({
-  id: z.string(),
-  threadId: z.string(),
-  date: z.string(),
-  from: z.string(),
-  to: z.string(),
-  subject: z.string(),
-  snippet: z.string(),
-  unread: z.boolean(),
-  labels: z.array(z.string()),
-});
-export type MessageSummary = z.infer<typeof MessageSummarySchema>;
-
-export interface SearchResult {
-  messages: MessageSummary[];
-  resultSizeEstimate: number; // Gmail's *estimate* of total matches, not exact
-  nextPageToken?: string; // present when there are more results
 }
 
 export async function searchMessages(
@@ -128,13 +137,6 @@ export async function searchMessages(
       : {}),
   };
 }
-
-export const FullMessageSchema = ExtractedMessageSchema.extend({
-  id: z.string(),
-  threadId: z.string(),
-  labels: z.array(z.string()),
-});
-export type FullMessage = z.infer<typeof FullMessageSchema>;
 
 // format "full" returns the entire MIME tree, with bodies inline (base64url).
 export async function getMessage(account: Account, id: string): Promise<FullMessage> {

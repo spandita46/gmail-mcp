@@ -8,6 +8,36 @@ const MAX_ADDRESS = 254; // longest valid email address (RFC 5321)
 const MAX_DATE = 80; // Date header
 const MAX_LINK = 1000; // unsubscribe links; longer ones are dropped, since a cut-off link is broken
 
+// The headers gmail.ts fetches for each message; the input to aggregateSenders.
+export interface ScannedMessage {
+  account: string;
+  from: string;
+  date: string;
+  internalDate?: number; // Gmail's own receive time (ms since epoch), more reliable than the Date header
+  listUnsubscribe: string;
+  listUnsubscribePost: string;
+}
+
+// Schemas are the source of truth: the cleanup_report tool uses them as its outputSchema,
+// and the TypeScript types are derived from them.
+export const UnsubscribeSchema = z.object({
+  url: z.string().optional(),    // https link, opened in a browser
+  mailto: z.string().optional(), // send-an-email style unsubscribe
+  oneClick: z.boolean(),         // RFC 8058: the sender supports one-click unsubscribe
+});
+export type Unsubscribe = z.infer<typeof UnsubscribeSchema>;
+
+export const SenderStatsSchema = z.object({
+  address: z.string(),
+  name: z.string(),
+  total: z.number(),
+  byAccount: z.record(z.string(), z.number()),
+  latest: z.string(), // Date header of the newest message seen
+  unsubscribe: UnsubscribeSchema.optional(),
+  gmailQuery: z.string(), // paste into Gmail search to see or bulk-select them
+});
+export type SenderStats = z.infer<typeof SenderStatsSchema>;
+
 // Header values are written by the sender, so treat them as untrusted text: remove control
 // characters (newlines included, so a header can't inject lines into the report), collapse
 // whitespace, and cap the length.
@@ -33,15 +63,6 @@ export function parseDate(header: string): number | undefined {
   const ms = Date.parse(header.replace(/\s*\([^)]*\)\s*$/, ""));
   return Number.isNaN(ms) ? undefined : ms;
 }
-
-// Schemas are the source of truth: the cleanup_report tool uses them as its outputSchema,
-// and the TypeScript types are derived from them.
-export const UnsubscribeSchema = z.object({
-  url: z.string().optional(),    // https link, opened in a browser
-  mailto: z.string().optional(), // send-an-email style unsubscribe
-  oneClick: z.boolean(),         // RFC 8058: the sender supports one-click unsubscribe
-});
-export type Unsubscribe = z.infer<typeof UnsubscribeSchema>;
 
 // Accept a link only if it parses, uses the expected scheme, and has no whitespace or control
 // characters. Returns the normalised form so what we show is what a browser would open.
@@ -83,26 +104,6 @@ export function mergeUnsubscribe(current: Unsubscribe | undefined, next: Unsubsc
   const mailto = best.mailto ?? other.mailto;
   return { ...best, ...(mailto ? { mailto } : {}) };
 }
-
-export interface ScannedMessage {
-  account: string;
-  from: string;
-  date: string;
-  internalDate?: number; // Gmail's own receive time (ms since epoch), more reliable than the Date header
-  listUnsubscribe: string;
-  listUnsubscribePost: string;
-}
-
-export const SenderStatsSchema = z.object({
-  address: z.string(),
-  name: z.string(),
-  total: z.number(),
-  byAccount: z.record(z.string(), z.number()),
-  latest: z.string(), // Date header of the newest message seen
-  unsubscribe: UnsubscribeSchema.optional(),
-  gmailQuery: z.string(), // paste into Gmail search to see or bulk-select them
-});
-export type SenderStats = z.infer<typeof SenderStatsSchema>;
 
 // Group scanned messages by sender address and rank by volume.
 export function aggregateSenders(messages: ScannedMessage[], top: number): SenderStats[] {
