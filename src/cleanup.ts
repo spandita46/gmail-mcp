@@ -7,6 +7,8 @@ const MAX_NAME = 80; // From display name
 const MAX_ADDRESS = 254; // longest valid email address (RFC 5321)
 const MAX_DATE = 80; // Date header
 const MAX_LINK = 1000; // unsubscribe links; longer ones are dropped, since a cut-off link is broken
+// A plain address with no spaces, quotes or brackets: safe to drop straight into a Gmail search.
+const PLAIN_ADDRESS = /^[^\s@"()<>]+@[^\s@"()<>]+$/;
 
 // The headers gmail.ts fetches for each message; the input to aggregateSenders.
 export interface ScannedMessage {
@@ -105,6 +107,12 @@ export function mergeUnsubscribe(current: Unsubscribe | undefined, next: Unsubsc
   return { ...best, ...(mailto ? { mailto } : {}) };
 }
 
+// A Gmail search for this sender. Anything that isn't a plain address is quoted, so text like
+// "a@b.com OR in:anywhere" stays one search term instead of becoming extra Gmail operators.
+function gmailFromQuery(address: string): string {
+  return PLAIN_ADDRESS.test(address) ? `from:${address}` : `from:"${address.replace(/"/g, "")}"`;
+}
+
 // Group scanned messages by sender address and rank by volume.
 export function aggregateSenders(messages: ScannedMessage[], top: number): SenderStats[] {
   const bySender = new Map<string, SenderStats & { latestMs: number }>();
@@ -116,7 +124,7 @@ export function aggregateSenders(messages: ScannedMessage[], top: number): Sende
     // Messages arrive newest first, so a sender whose dates are all unreadable keeps the first one seen.
     const stats =
       bySender.get(address) ??
-      { address, name, total: 0, byAccount: {}, latest: date, latestMs: ms ?? -Infinity, gmailQuery: `from:${address}` };
+      { address, name, total: 0, byAccount: {}, latest: date, latestMs: -Infinity, gmailQuery: gmailFromQuery(address) };
     stats.total += 1;
     stats.byAccount[m.account] = (stats.byAccount[m.account] ?? 0) + 1;
     if (ms !== undefined && ms > stats.latestMs) {
