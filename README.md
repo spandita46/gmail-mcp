@@ -149,16 +149,21 @@ Project layout:
 src/
 ├── server.ts            # MCP entry point: creates the server and registers tools
 ├── tools/
-│   ├── shared.ts        # schemas and helpers shared by the tools
+│   ├── shared.ts        # parameter schemas and helpers shared by the tools
+│   ├── ping.ts          # ping
+│   ├── server-time.ts   # server_time
 │   ├── list-accounts.ts # list_accounts
 │   ├── search-mail.ts   # search_mail
 │   ├── search-all.ts    # search_all_accounts (Promise.allSettled)
 │   ├── read-message.ts  # read_message + read_thread
 │   └── cleanup-report.ts # cleanup_report
-├── gmail.ts             # Gmail API layer: cached client per account, search, read, error mapping
+├── gmail.ts             # Gmail API layer: cached client per account, search, read, scan
+├── google-errors.ts     # HTTP status helpers and readable messages for Google errors
 ├── mime.ts              # MIME tree walking, base64url decoding, HTML → text, truncation
-├── cleanup.ts           # sender parsing, List-Unsubscribe parsing, aggregation, concurrency limit
-├── config.ts            # account aliases, scopes, OAuth client loading, Keychain storage
+├── cleanup.ts           # sender parsing, List-Unsubscribe parsing, aggregation
+├── async.ts             # generic async helpers: concurrency limit, retry with backoff
+├── config.ts            # settings: account aliases, scopes, time zone, OAuth client loading
+├── tokens.ts            # refresh tokens in macOS Keychain, linked accounts
 ├── time.ts              # time zone helpers (local midnight → epoch, DST-safe)
 └── auth.ts              # one-time OAuth CLI (loopback redirect + PKCE + state)
 ```

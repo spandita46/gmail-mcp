@@ -8,29 +8,6 @@ const MAX_ADDRESS = 254; // longest valid email address (RFC 5321)
 const MAX_DATE = 80; // Date header
 const MAX_LINK = 1000; // unsubscribe links; longer ones are dropped, since a cut-off link is broken
 
-// Run async work over many items, but at most `limit` at a time.
-// Gmail rate-limits per user, so firing 300 requests at once would hit 429 errors.
-// If any call throws, the other workers stop taking new items and the error is rethrown.
-export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  let failed = false;
-  // Start `limit` workers. Each one keeps taking the next unprocessed index until none are left.
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (!failed && next < items.length) {
-      const i = next++; // safe: JavaScript is single-threaded, so no two workers get the same i
-      try {
-        results[i] = await fn(items[i]!);
-      } catch (err) {
-        failed = true;
-        throw err;
-      }
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
 // Header values are written by the sender, so treat them as untrusted text: remove control
 // characters (newlines included, so a header can't inject lines into the report), collapse
 // whitespace, and cap the length.

@@ -1,14 +1,14 @@
 import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import { z } from "zod";
-import { type Account, createOAuthClient, loadToken } from "./config.js";
+import { mapLimit, withRetry } from "./async.js";
+import type { ScannedMessage } from "./cleanup.js";
+import { type Account, createOAuthClient } from "./config.js";
+import { httpStatus, isTransient } from "./google-errors.js";
 import { cleanText, extractMessage, ExtractedMessageSchema } from "./mime.js";
-import { mapLimit, type ScannedMessage } from "./cleanup.js";
+import { loadToken } from "./tokens.js";
 
 const LIST_PAGE_SIZE = 500; // the most ids Gmail returns per messages.list page
 const SCAN_CONCURRENCY = 10; // parallel requests per account; higher risks 429s
-const RETRY_ATTEMPTS = 4; // total tries for a request that fails with 429/5xx
-const RETRY_BASE_MS = 500; // first backoff delay, doubled on each retry
-const RETRY_JITTER_MS = 250; // random extra delay, so parallel retries don't line up
 
 // One client per account, created on first use and kept for the life of the process.
 // Each OAuth2Client caches its own 1-hour access token, so reusing it avoids a token
@@ -129,37 +129,6 @@ export async function searchMessages(
   };
 }
 
-// Turn Google/HTTP errors into messages that tell you what to do next.
-// Two shapes reach here:
-//   • token endpoint errors: response.data.error is a string, e.g. "invalid_grant"
-//   • Gmail API errors:      response.status is 403 / 429, data.error is an object
-export function describeGoogleError(err: unknown, account: Account): string {
-  const e = err as {
-    message?: string;
-    status?: number;
-    response?: {
-      status?: number;
-      data?: { error?: unknown; error_description?: string };
-    };
-  };
-  const status = e.response?.status ?? e.status;
-  const oauthError = e.response?.data?.error;
-
-  if (oauthError === "invalid_grant") {
-    return `The saved sign-in for "${account}" has expired or was revoked. Re-run: npm run auth -- ${account}`;
-  }
-  if (status === 403) {
-    return `Google refused access for "${account}" (403). The account may not have granted Gmail permission. Re-run: npm run auth -- ${account}`;
-  }
-  if (status === 404) {
-    return `Not found in "${account}". The id may be wrong, or the message belongs to a different account.`;
-  }
-  if (status === 429) {
-    return `Gmail rate limit hit for "${account}". Wait a few seconds and try again.`;
-  }
-  return `Gmail request failed for "${account}": ${e.message ?? String(err)}`;
-}
-
 export const FullMessageSchema = ExtractedMessageSchema.extend({
   id: z.string(),
   threadId: z.string(),
@@ -216,31 +185,6 @@ export async function listMessageIds(
   return { ids: kept, estimate: complete ? kept.length : Math.max(estimate, kept.length), complete };
 }
 
-function httpStatus(err: unknown): number | undefined {
-  const e = err as { status?: unknown; code?: unknown; response?: { status?: unknown } };
-  const status = e.response?.status ?? e.status ?? e.code;
-  return typeof status === "number" ? status : undefined;
-}
-
-// 429 and 5xx are usually temporary, so they are worth retrying.
-function isTransient(status: number | undefined): boolean {
-  return status === 429 || (status !== undefined && status >= 500);
-}
-
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Retry temporary failures with exponential backoff and jitter: about 0.5s, 1s, 2s.
-async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (attempt >= RETRY_ATTEMPTS || !isTransient(httpStatus(err))) throw err;
-      await wait(RETRY_BASE_MS * 2 ** (attempt - 1) + Math.random() * RETRY_JITTER_MS);
-    }
-  }
-}
-
 // Fetch just the headers the cleanup report needs, SCAN_CONCURRENCY requests at a time.
 // One bad message shouldn't sink the whole scan: a message deleted since the list call (404),
 // or one that keeps failing with 429/5xx after retries, is counted in `skipped`.
@@ -252,13 +196,15 @@ export async function scanSenders(
   const { api } = gmailFor(account);
   const results = await mapLimit(ids, SCAN_CONCURRENCY, async (id): Promise<ScannedMessage | undefined> => {
     try {
-      const { data } = await withRetry(() =>
-        api.users.messages.get({
-          userId: "me",
-          id,
-          format: "metadata",
-          metadataHeaders: ["From", "Date", "List-Unsubscribe", "List-Unsubscribe-Post"],
-        }),
+      const { data } = await withRetry(
+        () =>
+          api.users.messages.get({
+            userId: "me",
+            id,
+            format: "metadata",
+            metadataHeaders: ["From", "Date", "List-Unsubscribe", "List-Unsubscribe-Post"],
+          }),
+        isTransient,
       );
       const header = (name: string) => getHeader(data.payload?.headers, name);
       const internalDate = Number(data.internalDate);
@@ -271,8 +217,7 @@ export async function scanSenders(
         listUnsubscribePost: header("List-Unsubscribe-Post"),
       };
     } catch (err) {
-      const status = httpStatus(err);
-      if (status === 404 || isTransient(status)) return undefined;
+      if (httpStatus(err) === 404 || isTransient(err)) return undefined;
       throw err;
     }
   });

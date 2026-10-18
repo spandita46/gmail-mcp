@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ACCOUNTS } from "../config.js";
 import { FullMessageSchema, getMessage, getThread, type FullMessage } from "../gmail.js";
 import { truncate } from "../mime.js";
-import { toolErrorMessage } from "./shared.js";
+import { handleAccountError } from "./shared.js";
 
 const accountParam = z.enum(ACCOUNTS).default("primary").describe("Which linked account the message belongs to.");
 
@@ -78,7 +78,7 @@ export function registerReadMessage(server: McpServer): void {
           structuredContent: { account, ...message },
         };
       } catch (err) {
-        const message = toolErrorMessage(err, account);
+        const message = handleAccountError(err, account);
         console.error(`[gmail-multi] read_message failed: ${message}`);
         return { content: [{ type: "text", text: message }], isError: true };
       }
@@ -121,7 +121,7 @@ export function registerReadMessage(server: McpServer): void {
           structuredContent: { account, threadId, messages },
         };
       } catch (err) {
-        const message = toolErrorMessage(err, account);
+        const message = handleAccountError(err, account);
         console.error(`[gmail-multi] read_thread failed: ${message}`);
         return { content: [{ type: "text", text: message }], isError: true };
       }

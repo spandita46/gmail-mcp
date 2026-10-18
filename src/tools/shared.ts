@@ -1,10 +1,7 @@
 import { z } from "zod";
 import { TIME_ZONE, type Account } from "../config.js";
-import {
-  describeGoogleError,
-  resetClient,
-  type MessageSummary,
-} from "../gmail.js";
+import { resetClient, type MessageSummary } from "../gmail.js";
+import { describeGoogleError } from "../google-errors.js";
 import { localMidnightEpoch } from "../time.js";
 
 export const LocalDate = z
@@ -51,9 +48,10 @@ export function formatMessages(messages: MessageSummary[]): string[] {
   );
 }
 
-// One place for "turn any failure into a clear message". It also drops the cached
-// client, so a re-auth takes effect without restarting Claude.
-export function toolErrorMessage(err: unknown, account: Account): string {
+// Call this when a request for an account fails. It does two things:
+//   1. drops the account's cached client, so a re-auth takes effect without restarting Claude
+//   2. returns a clear message describing the failure
+export function handleAccountError(err: unknown, account: Account): string {
   resetClient(account);
   return err instanceof Error && !("response" in err)
     ? err.message

@@ -1,13 +1,14 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { ACCOUNTS, linkedAccounts } from "../config.js";
+import { ACCOUNTS } from "../config.js";
+import { linkedAccounts } from "../tokens.js";
 import { MessageSummarySchema, searchMessages } from "../gmail.js";
 import {
   buildQuery,
   formatMessages,
   queryParam,
   sinceParam,
-  toolErrorMessage,
+  handleAccountError,
   untilParam,
 } from "./shared.js";
 
@@ -101,7 +102,7 @@ export function registerSearchAllAccounts(server: McpServer): void {
               account,
               email,
               ok: false,
-              error: toolErrorMessage(outcome.reason, account),
+              error: handleAccountError(outcome.reason, account),
               messages: [],
             };
       });

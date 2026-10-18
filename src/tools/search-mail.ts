@@ -7,7 +7,7 @@ import {
   formatMessages,
   queryParam,
   sinceParam,
-  toolErrorMessage,
+  handleAccountError,
   untilParam,
 } from "./shared.js";
 
@@ -89,7 +89,7 @@ export function registerSearchMail(server: McpServer): void {
           structuredContent: { account, email, query, ...result },
         };
       } catch (err) {
-        const message = toolErrorMessage(err, account);
+        const message = handleAccountError(err, account);
         console.error(`[gmail-multi] search_mail failed: ${message}`);
         return { content: [{ type: "text", text: message }], isError: true };
       }

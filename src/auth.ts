@@ -11,9 +11,8 @@ import {
   SCOPES,
   createOAuthClient,
   isAccount,
-  loadToken,
-  saveToken,
 } from "./config.js";
+import { loadToken, saveToken } from "./tokens.js";
 
 // This is a CLI, not the MCP server, so console.log is fine here.
 const account = process.argv[2];

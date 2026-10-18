@@ -1,9 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { ACCOUNTS, linkedAccounts } from "../config.js";
+import { ACCOUNTS } from "../config.js";
+import { linkedAccounts } from "../tokens.js";
 import { aggregateSenders, SenderStatsSchema, type ScannedMessage } from "../cleanup.js";
 import { listMessageIds, scanSenders } from "../gmail.js";
-import { toolErrorMessage } from "./shared.js";
+import { handleAccountError } from "./shared.js";
 
 // One entry per account. Only this tool builds it, so the schema lives here.
 const ScanSchema = z.object({
@@ -81,7 +82,7 @@ export function registerCleanupReport(server: McpServer): void {
           scanned.push(...messages);
           return { account, email, ok: true, scanned: messages.length, skipped, complete, estimate };
         }
-        const error = toolErrorMessage(outcome.reason, account);
+        const error = handleAccountError(outcome.reason, account);
         return { account, email, ok: false, error, scanned: 0, skipped: 0, complete: false, estimate: 0 };
       });
 

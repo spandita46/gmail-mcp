@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { ACCOUNTS, linkedAccounts } from "../config.js";
+import { ACCOUNTS } from "../config.js";
+import { linkedAccounts } from "../tokens.js";
 
 export function registerListAccounts(server: McpServer): void {
   server.registerTool(
