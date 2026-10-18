@@ -1,0 +1,22 @@
+# Dependencies (installed by `npm i`, never committed)
+node_modules/
+# Build output from `tsc`
+dist/
+
+# Google OAuth client files, in case one is ever downloaded into the project by mistake
+client_secret*.json
+client.json
+*.json.secret
+
+# Local environment overrides
+.env
+.env.*
+
+# Personal editor settings
+.vscode/
+
+# macOS Finder metadata
+.DS_Store
+
+# Debug logs and test output
+*.log
