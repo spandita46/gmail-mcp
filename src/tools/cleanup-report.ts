@@ -1,10 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ACCOUNTS } from "../config.js";
-import { linkedAccounts } from "../tokens.js";
 import { aggregateSenders, SenderStatsSchema, type ScannedMessage } from "../cleanup.js";
 import { listMessageIds, scanSenders } from "../gmail.js";
-import { handleAccountError } from "./shared.js";
+import { errorResult, NO_LINKED_ACCOUNTS, runPerAccount } from "./shared.js";
 
 // One entry per account. Only this tool builds it, so the schema lives here.
 const ScanSchema = z.object({
@@ -57,33 +56,22 @@ export function registerCleanupReport(server: McpServer): void {
       // Parentheses keep the date filter applying to the whole query, e.g. "from:a OR from:b".
       const trimmed = userQuery.trim();
       const query = trimmed ? `(${trimmed}) newer_than:${days}d` : `newer_than:${days}d`;
-      const targets = linkedAccounts().filter((a) => !accounts || accounts.includes(a.account));
-      // The query isn't logged: it can contain personal search terms.
-      console.error(`[gmail-multi] cleanup_report days=${days} accounts=${targets.map((t) => t.account).join(",") || "none"}`);
-
-      if (targets.length === 0) {
-        return { content: [{ type: "text", text: "No linked accounts match. Run: npm run auth -- <alias>" }], isError: true };
-      }
-
       // Accounts in parallel. Within each account, scanSenders limits how many requests run at once.
-      const settled = await Promise.allSettled(
-        targets.map(async (t) => {
-          const { ids, estimate, complete } = await listMessageIds(t.account, query, maxScanPerAccount);
-          const { messages, skipped } = await scanSenders(t.account, ids);
-          return { estimate, complete, messages, skipped };
-        }),
-      );
+      const outcomes = await runPerAccount("cleanup_report", accounts, async (account) => {
+        const { ids, estimate, complete } = await listMessageIds(account, query, maxScanPerAccount);
+        const { messages, skipped } = await scanSenders(account, ids);
+        return { estimate, complete, messages, skipped };
+      });
+      if (outcomes.length === 0) return errorResult(NO_LINKED_ACCOUNTS);
 
       const scanned: ScannedMessage[] = [];
-      const accountSummaries = settled.map((outcome, i): AccountScan => {
-        const { account, email } = targets[i]!;
-        if (outcome.status === "fulfilled") {
-          const { messages, skipped, complete, estimate } = outcome.value;
+      const accountSummaries = outcomes.map(({ account, email, ...o }): AccountScan => {
+        if (o.ok) {
+          const { messages, skipped, complete, estimate } = o.value;
           scanned.push(...messages);
           return { account, email, ok: true, scanned: messages.length, skipped, complete, estimate };
         }
-        const error = handleAccountError(outcome.reason, account);
-        return { account, email, ok: false, error, scanned: 0, skipped: 0, complete: false, estimate: 0 };
+        return { account, email, ok: false, error: o.error, scanned: 0, skipped: 0, complete: false, estimate: 0 };
       });
 
       const scanLines = accountSummaries.map((a) => {
@@ -93,10 +81,8 @@ export function registerCleanupReport(server: McpServer): void {
         return `- ${a.account} <${a.email}>: scanned ${a.scanned}${more}${skipped}`;
       });
 
-      // Every account failed: report the per-account errors as text only. Some hosts drop or
-      // reject structuredContent on an error result, so the details must be in the text.
       if (accountSummaries.every((a) => !a.ok)) {
-        return { content: [{ type: "text", text: ["Cleanup report failed for every account:", ...scanLines].join("\n") }], isError: true };
+        return errorResult(["Cleanup report failed for every account:", ...scanLines].join("\n"));
       }
 
       const senders = aggregateSenders(scanned, top);

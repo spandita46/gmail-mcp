@@ -1,14 +1,15 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ACCOUNTS } from "../config.js";
-import { linkedAccounts } from "../tokens.js";
 import { MessageSummarySchema, searchMessages } from "../gmail.js";
 import {
   buildQuery,
+  errorResult,
   formatMessages,
+  NO_LINKED_ACCOUNTS,
   queryParam,
+  runPerAccount,
   sinceParam,
-  handleAccountError,
   untilParam,
 } from "./shared.js";
 
@@ -61,51 +62,22 @@ export function registerSearchAllAccounts(server: McpServer): void {
     },
     async ({ query: userQuery, since, until, accounts, maxPerAccount }) => {
       const query = buildQuery(userQuery, since, until);
-      // Only linked accounts, optionally narrowed to the ones Claude asked for.
-      const targets = linkedAccounts().filter(
-        (a) => !accounts || accounts.includes(a.account),
+      const outcomes = await runPerAccount("search_all_accounts", accounts, (account) =>
+        searchMessages(account, query, maxPerAccount),
       );
-      console.error(
-        `[gmail-multi] search_all_accounts q="${query}" accounts=${targets.map((t) => t.account).join(",") || "none"}`,
-      );
+      if (outcomes.length === 0) return errorResult(NO_LINKED_ACCOUNTS);
 
-      if (targets.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "No linked accounts match. Run: npm run auth -- <alias>",
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      // allSettled, NOT all: Promise.all rejects as soon as ONE account fails and you lose
-      // the others' results. allSettled waits for every account and reports each outcome.
-      const settled = await Promise.allSettled(
-        targets.map((t) => searchMessages(t.account, query, maxPerAccount)),
-      );
-
-      // settled[i] lines up with targets[i] (same order as the array we passed in).
-      const results = settled.map((outcome, i) => {
-        const { account, email } = targets[i]!; // "!" because index access could be undefined under strict settings
-        return outcome.status === "fulfilled"
+      const results = outcomes.map(({ account, email, ...o }) =>
+        o.ok
           ? {
               account,
               email,
               ok: true,
-              resultSizeEstimate: outcome.value.resultSizeEstimate,
-              messages: outcome.value.messages,
+              resultSizeEstimate: o.value.resultSizeEstimate,
+              messages: o.value.messages,
             }
-          : {
-              account,
-              email,
-              ok: false,
-              error: handleAccountError(outcome.reason, account),
-              messages: [],
-            };
-      });
+          : { account, email, ok: false, error: o.error, messages: [] },
+      );
 
       // Text grouped by account, with a heading for each.
       const sections = results.map((r) => {
@@ -118,8 +90,10 @@ export function registerSearchAllAccounts(server: McpServer): void {
         ].join("\n\n");
       });
 
-      // Partial failure is still a success. Only flag isError when *every* account failed.
-      const allFailed = results.every((r) => !r.ok);
+      // Partial failure is still a success. Only report an error when *every* account failed.
+      if (results.every((r) => !r.ok)) {
+        return errorResult(["Search failed for every account:", ...sections].join("\n\n"));
+      }
       return {
         content: [
           {
@@ -128,7 +102,6 @@ export function registerSearchAllAccounts(server: McpServer): void {
           },
         ],
         structuredContent: { query, results },
-        ...(allFailed ? { isError: true } : {}),
       };
     },
   );

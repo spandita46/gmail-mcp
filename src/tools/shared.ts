@@ -3,6 +3,14 @@ import { TIME_ZONE, type Account } from "../config.js";
 import { resetClient, type MessageSummary } from "../gmail.js";
 import { describeGoogleError } from "../google-errors.js";
 import { localMidnightEpoch } from "../time.js";
+import { linkedAccounts } from "../tokens.js";
+
+export const NO_LINKED_ACCOUNTS = "No linked accounts match. Run: npm run auth -- <alias>";
+
+// The result of one account's work in runPerAccount: its value, or a readable error.
+export type AccountOutcome<T> =
+  | { account: Account; email: string; ok: true; value: T }
+  | { account: Account; email: string; ok: false; error: string };
 
 export const LocalDate = z
   .string()
@@ -56,4 +64,35 @@ export function handleAccountError(err: unknown, account: Account): string {
   return err instanceof Error && !("response" in err)
     ? err.message
     : describeGoogleError(err, account);
+}
+
+// A text-only error result. Some hosts drop or reject structuredContent on an error,
+// so everything the user needs to know must be in the text.
+export function errorResult(text: string) {
+  return { content: [{ type: "text" as const, text }], isError: true };
+}
+
+// Run `work` for every linked account (or only the `selected` ones) in parallel.
+// One account failing doesn't affect the others: each outcome is reported separately.
+// Returns an empty array when no linked account matches; callers return NO_LINKED_ACCOUNTS then.
+export async function runPerAccount<T>(
+  tool: string,
+  selected: readonly Account[] | undefined,
+  work: (account: Account) => Promise<T>,
+): Promise<AccountOutcome<T>[]> {
+  const targets = linkedAccounts().filter((a) => !selected || selected.includes(a.account));
+  // Only the tool and accounts are logged: queries can contain personal search terms.
+  console.error(`[gmail-multi] ${tool} accounts=${targets.map((t) => t.account).join(",") || "none"}`);
+
+  // allSettled, NOT all: Promise.all rejects as soon as ONE account fails and you lose
+  // the others' results. allSettled waits for every account and reports each outcome.
+  const settled = await Promise.allSettled(targets.map((t) => work(t.account)));
+
+  // settled[i] lines up with targets[i] (same order as the array we passed in).
+  return settled.map((outcome, i) => {
+    const { account, email } = targets[i]!; // "!" because index access could be undefined under strict settings
+    return outcome.status === "fulfilled"
+      ? { account, email, ok: true, value: outcome.value }
+      : { account, email, ok: false, error: handleAccountError(outcome.reason, account) };
+  });
 }
