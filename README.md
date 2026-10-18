@@ -61,7 +61,7 @@ Gmail can interpret plain dates in a different time zone than yours, so "today" 
 ### 2. Install
 
 ```bash
-git clone https://github.com/<you>/gmail-mcp.git
+git clone https://github.com/spandita46/gmail-mcp.git
 cd gmail-mcp
 npm install
 npm run typecheck
