@@ -6,6 +6,7 @@ import { localToday, TIME_ZONE } from "./time.js";
 import { registerListAccounts } from "./tools/list-accounts.js";
 import { registerSearchAllAccounts } from "./tools/search-all.js";
 import { registerReadMessage } from "./tools/read-message.js";
+import { registerCleanupReport } from "./tools/cleanup-report.js";
 
 serveStdio(() => {
   const server = new McpServer(
@@ -101,6 +102,7 @@ serveStdio(() => {
   registerSearchMail(server);
   registerSearchAllAccounts(server);
   registerReadMessage(server);
+  registerCleanupReport(server);
 
   return server;
 });

@@ -1,6 +1,7 @@
 import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import { type Account, createOAuthClient, loadToken } from "./config.js";
 import { cleanText, extractMessage, type ExtractedMessage } from "./mime.js";
+import { mapLimit, type ScannedMessage } from "./cleanup.js";
 
 // One client per account, created on first use and kept for the life of the process.
 // Each OAuth2Client caches its own 1-hour access token, so reusing it avoids a token
@@ -171,4 +172,51 @@ export async function getThread(account: Account, threadId: string): Promise<Ful
     labels: m.labelIds ?? [],
     ...extractMessage(m.payload),
   }));
+}
+
+// Collect up to `max` message ids for a query, following nextPageToken
+// (Gmail returns at most 500 ids per page).
+export async function listMessageIds(
+  account: Account,
+  query: string,
+  max: number,
+): Promise<{ ids: string[]; estimate: number }> {
+  const { api } = gmailFor(account);
+  const ids: string[] = [];
+  let pageToken: string | undefined;
+  let estimate = 0;
+  do {
+    const { data } = await api.users.messages.list({
+      userId: "me",
+      q: query,
+      maxResults: Math.min(500, max - ids.length),
+      pageToken,
+    });
+    estimate = data.resultSizeEstimate ?? estimate;
+    for (const m of data.messages ?? []) if (m.id) ids.push(m.id);
+    pageToken = data.nextPageToken ?? undefined;
+  } while (pageToken && ids.length < max);
+  return { ids, estimate: Math.max(estimate, ids.length) };
+}
+
+// Fetch just the headers the cleanup report needs, 10 requests at a time.
+export async function scanSenders(account: Account, ids: string[]): Promise<ScannedMessage[]> {
+  const { api } = gmailFor(account);
+  return mapLimit(ids, 10, async (id) => {
+    const { data } = await api.users.messages.get({
+      userId: "me",
+      id,
+      format: "metadata",
+      metadataHeaders: ["From", "Date", "List-Unsubscribe", "List-Unsubscribe-Post"],
+    });
+    const header = (name: string) =>
+      data.payload?.headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
+    return {
+      account,
+      from: header("From"),
+      date: header("Date"),
+      listUnsubscribe: header("List-Unsubscribe"),
+      listUnsubscribePost: header("List-Unsubscribe-Post"),
+    };
+  });
 }

@@ -7,7 +7,7 @@ A local [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server t
 - **Read-only.** Uses the `gmail.readonly` scope. It cannot send, delete or modify mail.
 - **No secrets on disk in the repo.** Refresh tokens live in the macOS Keychain; the OAuth client file lives outside the project.
 
-> Status: work in progress. Search works today; reading full messages, drafts and cross-account search are on the roadmap.
+> Status: search and read across all linked accounts work today. The server is read-only by design.
 
 ---
 
@@ -15,7 +15,12 @@ A local [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server t
 
 | Tool | What it does |
 |---|---|
+| `list_accounts` | Lists the account aliases, which ones are linked, and their email addresses. |
 | `search_mail` | Search one linked account with Gmail search syntax. Returns sender, subject, date, unread flag and a snippet. Supports `since` / `until` (local dates, `YYYY-MM-DD`) and pagination via `pageToken`. |
+| `search_all_accounts` | Run the same search across all linked accounts (or a chosen subset) in parallel, grouped by account. One failing account doesn't block the others. |
+| `read_message` | Read one email in full: headers, plain-text body (HTML converted to text), and attachment names and sizes. Long bodies are truncated with a note. Does not mark the email as read. |
+| `read_thread` | Read a whole conversation, oldest message first. |
+| `cleanup_report` | Find which senders fill your inboxes: scans recent mail (default Promotions, last 90 days), ranks senders by volume, and returns each one's unsubscribe link and a Gmail search to bulk-select their emails. Read-only. |
 | `server_time` | Current date and time on the user's machine, including `today` (`YYYY-MM-DD`) for use with `since` / `until`. |
 | `ping` | Health check that echoes a message. |
 
@@ -143,8 +148,16 @@ Project layout:
 ```
 src/
 ├── server.ts            # MCP entry point: creates the server and registers tools
-├── tools/search-mail.ts # search_mail tool (schemas, description, output)
-├── gmail.ts             # Gmail API layer: cached client per account, search, error mapping
+├── tools/
+│   ├── shared.ts        # schemas and helpers shared by the tools
+│   ├── list-accounts.ts # list_accounts
+│   ├── search-mail.ts   # search_mail
+│   ├── search-all.ts    # search_all_accounts (Promise.allSettled)
+│   ├── read-message.ts  # read_message + read_thread
+│   └── cleanup-report.ts # cleanup_report
+├── gmail.ts             # Gmail API layer: cached client per account, search, read, error mapping
+├── mime.ts              # MIME tree walking, base64url decoding, HTML → text, truncation
+├── cleanup.ts           # sender parsing, List-Unsubscribe parsing, aggregation, concurrency limit
 ├── config.ts            # account aliases, scopes, OAuth client loading, Keychain storage
 ├── time.ts              # time zone helpers (local midnight → epoch, DST-safe)
 └── auth.ts              # one-time OAuth CLI (loopback redirect + PKCE + state)
@@ -162,7 +175,7 @@ Notes for contributors:
 
 - **OAuth:** authorization code flow with a loopback redirect on `127.0.0.1`, **PKCE (S256)** and a random **state** check. The Desktop-app client secret is not treated as confidential.
 - **Token storage:** one macOS Keychain item per alias (service `gmail-mcp`). Note that a Keychain item trusts the program that created it (`node`), so any Node script running as your user can read it without a prompt. Don't run untrusted Node code on the same account.
-- **Least privilege:** read-only Gmail scope. Write features (drafts) will be added as a separate, opt-in scope.
+- **Read-only by design:** only the `gmail.readonly` scope is requested, so the server cannot send, draft, delete or modify mail, even if other code used the tokens.
 - **Prompt injection:** email content is written by third parties. Tool descriptions tell the model to treat it as untrusted data, and the server exposes no sending capability.
 - **Revoking access:** remove the app at [myaccount.google.com/permissions](https://myaccount.google.com/permissions) and delete the `gmail-mcp` items in Keychain Access.
 
@@ -177,6 +190,7 @@ Notes for contributors:
 | Code changes don't take effect | Claude Desktop only restarts the server on launch — ⌘Q and reopen |
 | `Account "x" is not linked yet` | `npm run auth -- x` |
 | `has expired or was revoked` (`invalid_grant`) | Re-run `npm run auth -- <alias>`. In *Testing* mode this happens every 7 days |
+| `Not found in "<alias>"` | The message id belongs to a different account, or is wrong |
 | `403 access_denied` during sign-in | The address isn't listed under **Audience → Test users** |
 | `redirect_uri_mismatch` | The OAuth client was created as *Web* — create a *Desktop app* client |
 | Work account blocked | Google Workspace admins can block third-party API access — check with your admin |
@@ -188,10 +202,11 @@ Notes for contributors:
 - [x] stdio MCP server, Claude Desktop integration
 - [x] OAuth CLI with PKCE + Keychain storage
 - [x] `search_mail` with time-zone-correct `since` / `until`
-- [ ] Link remaining accounts + `search_all_accounts` (parallel, partial-failure tolerant)
-- [ ] `read_message` / `read_thread` (MIME parsing)
-- [ ] `create_draft` (opt-in `gmail.compose` scope; no sending)
+- [x] Multiple accounts + `list_accounts` and `search_all_accounts` (parallel, partial-failure tolerant)
+- [x] `read_message` / `read_thread` (MIME parsing)
 - [ ] Per-account tool policy
+
+**Not planned:** sending or drafting email. The server stays read-only by design.
 
 ## License
 

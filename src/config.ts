@@ -15,7 +15,7 @@ export function isAccount(value: string): value is Account {
   return (ACCOUNTS as readonly string[]).includes(value);
 }
 
-// Read-only for now. We'll add gmail.compose (drafts) in Milestone 7.
+// Read-only by design: no send, draft or modify permissions are ever requested.
 export const SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
 
 // Default location is outside the repo. Can be overridden with an env var.
