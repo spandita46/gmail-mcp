@@ -1,5 +1,6 @@
 import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import { type Account, createOAuthClient, loadToken } from "./config.js";
+import { cleanText, extractMessage, type ExtractedMessage } from "./mime.js";
 
 // One client per account, created on first use and kept for the life of the process.
 // Each OAuth2Client caches its own 1-hour access token, so reusing it avoids a token
@@ -100,7 +101,7 @@ export async function searchMessages(
       from: header("From"),
       to: header("To"),
       subject: header("Subject") || "(no subject)",
-      snippet: decodeEntities(data.snippet ?? ""),
+      snippet: cleanText(data.snippet ?? ""),
       unread: labels.includes("UNREAD"), // read/unread is just a label in Gmail
       labels,
     };
@@ -114,25 +115,6 @@ export async function searchMessages(
       ? { nextPageToken: list.data.nextPageToken }
       : {}),
   };
-}
-
-// Gmail snippets arrive HTML-escaped ("It&#39;s"). Decode the common entities.
-// &amp; goes last so "&amp;lt;" becomes "&lt;" and not "<".
-function decodeEntities(text: string): string {
-  return (
-    text
-      .replace(/&#(\d+);/g, (_, code: string) =>
-        String.fromCodePoint(Number(code)),
-      )
-      .replace(/&quot;/g, '"')
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&amp;/g, "&")
-      // Strip invisible padding characters that marketing emails use (zero-width chars, combining grapheme joiner)
-      .replace(/[\u034F\u200B-\u200F\u2060\uFEFF]/g, "")
-      .replace(/\s{2,}/g, " ")
-      .trim()
-  );
 }
 
 // Turn Google/HTTP errors into messages that tell you what to do next.
@@ -157,8 +139,36 @@ export function describeGoogleError(err: unknown, account: Account): string {
   if (status === 403) {
     return `Google refused access for "${account}" (403). The account may not have granted Gmail permission. Re-run: npm run auth -- ${account}`;
   }
+  if (status === 404) {
+    return `Not found in "${account}". The id may be wrong, or the message belongs to a different account.`;
+  }
   if (status === 429) {
     return `Gmail rate limit hit for "${account}". Wait a few seconds and try again.`;
   }
   return `Gmail request failed for "${account}": ${e.message ?? String(err)}`;
+}
+
+export interface FullMessage extends ExtractedMessage {
+  id: string;
+  threadId: string;
+  labels: string[];
+}
+
+// format "full" returns the entire MIME tree, with bodies inline (base64url).
+export async function getMessage(account: Account, id: string): Promise<FullMessage> {
+  const { api } = gmailFor(account);
+  const { data } = await api.users.messages.get({ userId: "me", id, format: "full" });
+  return { id: data.id ?? id, threadId: data.threadId ?? "", labels: data.labelIds ?? [], ...extractMessage(data.payload) };
+}
+
+// One call returns every message in the conversation, oldest first.
+export async function getThread(account: Account, threadId: string): Promise<FullMessage[]> {
+  const { api } = gmailFor(account);
+  const { data } = await api.users.threads.get({ userId: "me", id: threadId, format: "full" });
+  return (data.messages ?? []).map((m) => ({
+    id: m.id ?? "",
+    threadId: m.threadId ?? threadId,
+    labels: m.labelIds ?? [],
+    ...extractMessage(m.payload),
+  }));
 }
