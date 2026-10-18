@@ -1,0 +1,13 @@
+{
+  // Type-checks the tests together with the source. The main tsconfig.json covers src/ only,
+  // so test files never end up in a build.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The tests live outside src/, so widen the root to the whole project.
+    "rootDir": ".",
+    // Check only; never write .js files for tests.
+    "noEmit": true
+  },
+  // Source and tests together, so tests are checked against the real types.
+  "include": ["src", "test"]
+}

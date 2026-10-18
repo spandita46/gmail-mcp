@@ -39,8 +39,10 @@ export function buildQuery(
   since?: string,
   until?: string,
 ): string {
+  const trimmed = userQuery.trim();
   return [
-    userQuery,
+    // Parentheses keep the date filters applying to the whole query, e.g. "from:a OR from:b".
+    trimmed ? `(${trimmed})` : "",
     since ? `after:${localMidnightEpoch(since)}` : "",
     until ? `before:${localMidnightEpoch(until)}` : "",
   ]

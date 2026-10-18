@@ -11,9 +11,10 @@
   },
   "scripts": {
     "dev": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "inspect": "npx @modelcontextprotocol/inspector npx tsx src/server.ts",
-    "auth": "tsx src/auth.ts"
+    "auth": "tsx src/auth.ts",
+    "test": "node --import tsx --test --test-reporter=spec test/*.test.ts"
   },
   "dependencies": {
     "@googleapis/gmail": "^22.0.2",

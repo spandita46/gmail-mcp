@@ -1,14 +1,16 @@
 import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import { z } from "zod";
-import { mapLimit, withRetry } from "./async.js";
+import { mapLimit, withRetry, type RetryOptions } from "./async.js";
 import type { ScannedMessage } from "./cleanup.js";
 import { type Account, createOAuthClient } from "./config.js";
-import { httpStatus, isTransient } from "./google-errors.js";
+import { httpStatus, isRateLimited, isTransient, retryAfterMs } from "./google-errors.js";
 import { cleanText, extractMessage, ExtractedMessageSchema } from "./mime.js";
 import { loadToken } from "./tokens.js";
 
 const LIST_PAGE_SIZE = 500; // the most ids Gmail returns per messages.list page
-const SCAN_CONCURRENCY = 10; // parallel requests per account; higher risks 429s
+// Parallel requests per account. Gmail allows ~250 quota units/s per user and messages.get costs 5,
+// so ~50 requests/s at most. 10 in parallel overshot that in testing (a 1000-message scan got throttled).
+const SCAN_CONCURRENCY = 4;
 
 export interface GmailClient {
   api: gmail_v1.Gmail;
@@ -188,14 +190,26 @@ export async function listMessageIds(
 }
 
 // Fetch just the headers the cleanup report needs, SCAN_CONCURRENCY requests at a time.
-// One bad message shouldn't sink the whole scan: a message deleted since the list call (404),
-// or one that keeps failing with 429/5xx after retries, is counted in `skipped`.
-// Other errors (expired sign-in, 403) affect every request, so they still fail the scan.
 export async function scanSenders(
   account: Account,
   ids: string[],
 ): Promise<{ messages: ScannedMessage[]; skipped: number }> {
-  const { api } = gmailFor(account);
+  return scanSendersWith(gmailFor(account).api, account, ids);
+}
+
+// The testable core of scanSenders: takes the Gmail API object, so tests can pass a fake.
+// How failures are handled:
+//   • 404 (deleted since the list call) or a 5xx that outlasts the retries → skip that message
+//   • rate limit (429, or 403 userRateLimitExceeded) → retry, honouring Gmail's "Retry after" hint;
+//     if it still fails, fail the whole scan: throttling hits every request, so skipping would
+//     silently return an empty report
+//   • anything else (expired sign-in, real 403) → fail the scan
+export async function scanSendersWith(
+  api: gmail_v1.Gmail,
+  account: Account,
+  ids: string[],
+  retry: RetryOptions = {},
+): Promise<{ messages: ScannedMessage[]; skipped: number }> {
   const results = await mapLimit(ids, SCAN_CONCURRENCY, async (id): Promise<ScannedMessage | undefined> => {
     try {
       const { data } = await withRetry(
@@ -207,6 +221,7 @@ export async function scanSenders(
             metadataHeaders: ["From", "Date", "List-Unsubscribe", "List-Unsubscribe-Post"],
           }),
         isTransient,
+        { delayMs: (err) => retryAfterMs(err), ...retry },
       );
       const header = (name: string) => getHeader(data.payload?.headers, name);
       const internalDate = Number(data.internalDate);
@@ -219,7 +234,7 @@ export async function scanSenders(
         listUnsubscribePost: header("List-Unsubscribe-Post"),
       };
     } catch (err) {
-      if (httpStatus(err) === 404 || isTransient(err)) return undefined;
+      if (httpStatus(err) === 404 || (isTransient(err) && !isRateLimited(err))) return undefined;
       throw err;
     }
   });
