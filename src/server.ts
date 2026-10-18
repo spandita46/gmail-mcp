@@ -3,6 +3,8 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 import { registerSearchMail } from "./tools/search-mail.js";
 import { localToday, TIME_ZONE } from "./time.js";
+import { registerListAccounts } from "./tools/list-accounts.js";
+import { registerSearchAllAccounts } from "./tools/search-all.js";
 
 serveStdio(() => {
   const server = new McpServer(
@@ -94,6 +96,9 @@ serveStdio(() => {
       };
     },
   );
+  registerListAccounts(server);
   registerSearchMail(server);
+  registerSearchAllAccounts(server);
+
   return server;
 });

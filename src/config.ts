@@ -76,3 +76,24 @@ export function loadToken(account: Account): StoredToken | null {
   }
   return parsed.data;
 }
+
+export interface LinkedAccount {
+  account: Account;
+  email: string;
+  savedAt: string;
+}
+
+// Every alias that has a usable Keychain item. A malformed item counts as
+// "not linked" here instead of crashing the whole list.
+export function linkedAccounts(): LinkedAccount[] {
+  return ACCOUNTS.flatMap((account) => {
+    try {
+      const token = loadToken(account);
+      return token
+        ? [{ account, email: token.email, savedAt: token.savedAt }]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+}
