@@ -39,6 +39,12 @@ export function resetClient(account: Account): void {
   clients.delete(account);
 }
 
+// Header names are case-insensitive in email, so compare in lowercase.
+function getHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, name: string): string {
+  const wanted = name.toLowerCase();
+  return headers?.find((h) => h.name?.toLowerCase() === wanted)?.value ?? "";
+}
+
 export interface MessageSummary {
   id: string;
   threadId: string;
@@ -89,11 +95,7 @@ export async function searchMessages(
   );
 
   const messages = details.map(({ data }) => {
-    // Header names are case-insensitive in email, so compare in lowercase.
-    const header = (name: string) =>
-      data.payload?.headers?.find(
-        (h) => h.name?.toLowerCase() === name.toLowerCase(),
-      )?.value ?? "";
+    const header = (name: string) => getHeader(data.payload?.headers, name);
     const labels = data.labelIds ?? [];
     return {
       id: data.id ?? "",
@@ -175,12 +177,15 @@ export async function getThread(account: Account, threadId: string): Promise<Ful
 }
 
 // Collect up to `max` message ids for a query, following nextPageToken
-// (Gmail returns at most 500 ids per page).
+// (Gmail returns at most 500 ids per page). Pages must be fetched one after another,
+// because each request needs the previous page's token.
+// `complete` is true when every match was collected. `estimate` is Gmail's rough total and
+// only matters when the list was cut off at `max`.
 export async function listMessageIds(
   account: Account,
   query: string,
   max: number,
-): Promise<{ ids: string[]; estimate: number }> {
+): Promise<{ ids: string[]; estimate: number; complete: boolean }> {
   const { api } = gmailFor(account);
   const ids: string[] = [];
   let pageToken: string | undefined;
@@ -196,27 +201,71 @@ export async function listMessageIds(
     for (const m of data.messages ?? []) if (m.id) ids.push(m.id);
     pageToken = data.nextPageToken ?? undefined;
   } while (pageToken && ids.length < max);
-  return { ids, estimate: Math.max(estimate, ids.length) };
+  const complete = !pageToken && ids.length <= max;
+  const kept = ids.slice(0, max);
+  return { ids: kept, estimate: complete ? kept.length : Math.max(estimate, kept.length), complete };
+}
+
+function httpStatus(err: unknown): number | undefined {
+  const e = err as { status?: unknown; code?: unknown; response?: { status?: unknown } };
+  const status = e.response?.status ?? e.status ?? e.code;
+  return typeof status === "number" ? status : undefined;
+}
+
+// 429 and 5xx are usually temporary, so they are worth retrying.
+function isTransient(status: number | undefined): boolean {
+  return status === 429 || (status !== undefined && status >= 500);
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Retry temporary failures with exponential backoff and jitter: about 0.5s, 1s, 2s.
+async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= attempts || !isTransient(httpStatus(err))) throw err;
+      await wait(500 * 2 ** (attempt - 1) + Math.random() * 250);
+    }
+  }
 }
 
 // Fetch just the headers the cleanup report needs, 10 requests at a time.
-export async function scanSenders(account: Account, ids: string[]): Promise<ScannedMessage[]> {
+// One bad message shouldn't sink the whole scan: a message deleted since the list call (404),
+// or one that keeps failing with 429/5xx after retries, is counted in `skipped`.
+// Other errors (expired sign-in, 403) affect every request, so they still fail the scan.
+export async function scanSenders(
+  account: Account,
+  ids: string[],
+): Promise<{ messages: ScannedMessage[]; skipped: number }> {
   const { api } = gmailFor(account);
-  return mapLimit(ids, 10, async (id) => {
-    const { data } = await api.users.messages.get({
-      userId: "me",
-      id,
-      format: "metadata",
-      metadataHeaders: ["From", "Date", "List-Unsubscribe", "List-Unsubscribe-Post"],
-    });
-    const header = (name: string) =>
-      data.payload?.headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
-    return {
-      account,
-      from: header("From"),
-      date: header("Date"),
-      listUnsubscribe: header("List-Unsubscribe"),
-      listUnsubscribePost: header("List-Unsubscribe-Post"),
-    };
+  const results = await mapLimit(ids, 10, async (id): Promise<ScannedMessage | undefined> => {
+    try {
+      const { data } = await withRetry(() =>
+        api.users.messages.get({
+          userId: "me",
+          id,
+          format: "metadata",
+          metadataHeaders: ["From", "Date", "List-Unsubscribe", "List-Unsubscribe-Post"],
+        }),
+      );
+      const header = (name: string) => getHeader(data.payload?.headers, name);
+      const internalDate = Number(data.internalDate);
+      return {
+        account,
+        from: header("From"),
+        date: header("Date"),
+        ...(Number.isFinite(internalDate) && internalDate > 0 ? { internalDate } : {}),
+        listUnsubscribe: header("List-Unsubscribe"),
+        listUnsubscribePost: header("List-Unsubscribe-Post"),
+      };
+    } catch (err) {
+      const status = httpStatus(err);
+      if (status === 404 || isTransient(status)) return undefined;
+      throw err;
+    }
   });
+  const messages = results.filter((m): m is ScannedMessage => m !== undefined);
+  return { messages, skipped: results.length - messages.length };
 }
